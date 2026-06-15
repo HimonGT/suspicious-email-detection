@@ -1,0 +1,94 @@
+name: Publish Python Distribution [PyPi & GH Release | TestPyPi]
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  prepare-and-check:
+    runs-on: ubuntu-latest
+    outputs:
+      publish_to_pypi: ${{ steps.version_check.outputs.publish_to_pypi }}
+      publish_to_testpypi: ${{ steps.version_check.outputs.publish_to_testpypi }}
+      version: ${{ steps.version_check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies for version check
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Check version on PyPI or TestPyPI
+        id: version_check
+        run: python3 check_version.py
+        env:
+          GITHUB_OUTPUT: ${{ github.output }}
+
+  build-and-publish:
+    needs: prepare-and-check
+    if: needs.prepare-and-check.outputs.publish_to_pypi == 'true' || needs.prepare-and-check.outputs.publish_to_testpypi == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to TestPyPI
+        if: needs.prepare-and-check.outputs.publish_to_testpypi == 'true'
+        run: twine upload --repository-url https://test.pypi.org/legacy/ dist/*
+        env:
+          TWINE_USERNAME: ${{ secrets.TEST_PYPI_USERNAME }}
+          TWINE_PASSWORD: ${{ secrets.TEST_PYPI_PASSWORD }}
+
+      - name: Publish to PyPI
+        if: needs.prepare-and-check.outputs.publish_to_pypi == 'true'
+        run: twine upload dist/*
+        env:
+          TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
+          TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+
+      - name: Create tag if it doesn't exist
+        run: |
+          TAG_NAME="v${{ needs.prepare-and-check.outputs.version }}"
+          if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            git config user.name github-actions
+            git config user.email github-actions@github.com
+            git tag "$TAG_NAME"
+            git push origin "$TAG_NAME"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.prepare-and-check.outputs.version }}
+          name: v${{ needs.prepare-and-check.outputs.version }}
+          files: dist/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
